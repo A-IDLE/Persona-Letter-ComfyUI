@@ -10,13 +10,13 @@ import time
 import random
 import logging
 
-from PIL import Image, ImageOps, ImageSequence, ImageFile
+from PIL import Image, ImageOps, ImageSequence
 from PIL.PngImagePlugin import PngInfo
-
 import numpy as np
 import safetensors.torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "comfy"))
+
 
 import comfy.diffusers_load
 import comfy.samplers
@@ -35,6 +35,10 @@ import importlib
 import folder_paths
 import latent_preview
 import node_helpers
+
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
+from dotenv import load_dotenv
 
 def before_node_execution():
     comfy.model_management.throw_exception_if_processing_interrupted()
@@ -1399,6 +1403,28 @@ class SaveImage:
 
     CATEGORY = "image"
 
+    def upload_s3(image_name, image):
+        load_dotenv()
+        BUCKET_NAME = os.getenv("S3_BUCKET")
+
+        s3 = boto3.client(
+            's3',
+            aws_access_key_id=os.getenv("CREDENTIALS_ACCESS_KEY"),
+            aws_secret_access_key=os.getenv("CREDENTIALS_SECRET_KEY"),
+        )
+
+        object_name = f"letters/{image_name}"
+
+        try:
+            s3.upload_fileobj(image, BUCKET_NAME, object_name)
+            return True
+        except ClientError as e:
+            logging.error(e)
+            return False
+        except Exception as e:
+            logging.error(e)
+            return False
+
     def save_images(self, images, filename_prefix="ComfyUI", prompt=None, extra_pnginfo=None):
         filename_prefix += self.prefix_append
         full_output_folder, filename, counter, subfolder, filename_prefix = folder_paths.get_save_image_path(filename_prefix, self.output_dir, images[0].shape[1], images[0].shape[0])
@@ -1426,6 +1452,111 @@ class SaveImage:
             counter += 1
 
         return { "ui": { "images": results } }
+    
+    def save_images_with_s3_upload(self, images, filename_prefix="ComfyUI", prompt=None, extra_pnginfo=None):
+        filename_prefix += self.prefix_append
+        full_output_folder, filename, counter, subfolder, filename_prefix = folder_paths.get_save_image_path(filename_prefix, self.output_dir, images[0].shape[1], images[0].shape[0])
+        results = list()
+        for (batch_number, image) in enumerate(images):
+            i = 255. * image.cpu().numpy()
+            img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
+            metadata = None
+            if not args.disable_metadata:
+                metadata = PngInfo()
+                if prompt is not None:
+                    metadata.add_text("prompt", json.dumps(prompt))
+                if extra_pnginfo is not None:
+                    for x in extra_pnginfo:
+                        metadata.add_text(x, json.dumps(extra_pnginfo[x]))
+
+            filename_with_batch_num = filename.replace("%batch_num%", str(batch_number))
+            file = f"{filename_with_batch_num}_{counter:05}.jpg"
+            img.save(os.path.join(full_output_folder, file), pnginfo=metadata, compress_level=self.compress_level)
+            self.upload_s3(file, img)
+            results.append({
+                "filename": file,
+                "subfolder": subfolder,
+                "type": self.type
+            })
+            counter += 1
+
+            
+
+        return { "ui": { "images": results } }
+
+class SaveImageWithS3Upload:
+    def __init__(self):
+        self.output_dir = folder_paths.get_output_directory()
+        self.type = "output"
+        self.prefix_append = ""
+        self.compress_level = 4
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": 
+                    {"images": ("IMAGE", ),
+                     "filename_prefix": ("STRING", {"default": "ComfyUI"})},
+                "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"},
+                }
+
+    RETURN_TYPES = ()
+    FUNCTION = "save_images"
+
+    OUTPUT_NODE = True
+
+    CATEGORY = "image"
+
+    def upload_s3(image_name, image):
+        load_dotenv()
+        BUCKET_NAME = os.getenv("S3_BUCKET")
+
+        s3 = boto3.client(
+            's3',
+            aws_access_key_id=os.getenv("CREDENTIALS_ACCESS_KEY"),
+            aws_secret_access_key=os.getenv("CREDENTIALS_SECRET_KEY"),
+        )
+
+        object_name = f"letters/{image_name}"
+
+        try:
+            s3.upload_fileobj(image, BUCKET_NAME, object_name)
+            return True
+        except ClientError as e:
+            print(e)
+            return False
+        except Exception as e:
+            print(e)
+            return False
+    
+    def save_images_with_s3_upload(self, images, filename_prefix="ComfyUI", prompt=None, extra_pnginfo=None):
+        filename_prefix += self.prefix_append
+        full_output_folder, filename, counter, subfolder, filename_prefix = folder_paths.get_save_image_path(filename_prefix, self.output_dir, images[0].shape[1], images[0].shape[0])
+        results = list()
+        for (batch_number, image) in enumerate(images):
+            i = 255. * image.cpu().numpy()
+            img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
+            metadata = None
+            if not args.disable_metadata:
+                metadata = PngInfo()
+                if prompt is not None:
+                    metadata.add_text("prompt", json.dumps(prompt))
+                if extra_pnginfo is not None:
+                    for x in extra_pnginfo:
+                        metadata.add_text(x, json.dumps(extra_pnginfo[x]))
+
+            filename_with_batch_num = filename.replace("%batch_num%", str(batch_number))
+            file = f"{filename_with_batch_num}_{counter:05}.jpg"
+            img.save(os.path.join(full_output_folder, file), pnginfo=metadata, compress_level=self.compress_level)
+            self.upload_s3(file, img)
+            results.append({
+                "filename": file,
+                "subfolder": subfolder,
+                "type": self.type
+            })
+            counter += 1
+
+        return { "ui": { "images": results } }
+
 
 class PreviewImage(SaveImage):
     def __init__(self):
@@ -1456,29 +1587,14 @@ class LoadImage:
     FUNCTION = "load_image"
     def load_image(self, image):
         image_path = folder_paths.get_annotated_filepath(image)
-        
-        img = node_helpers.pillow(Image.open, image_path)
-        
+        img = Image.open(image_path)
         output_images = []
         output_masks = []
-        w, h = None, None
-
-        excluded_formats = ['MPO']
-        
         for i in ImageSequence.Iterator(img):
-            i = node_helpers.pillow(ImageOps.exif_transpose, i)
-
+            i = ImageOps.exif_transpose(i)
             if i.mode == 'I':
                 i = i.point(lambda i: i * (1 / 255))
             image = i.convert("RGB")
-
-            if len(output_images) == 0:
-                w = image.size[0]
-                h = image.size[1]
-            
-            if image.size[0] != w or image.size[1] != h:
-                continue
-            
             image = np.array(image).astype(np.float32) / 255.0
             image = torch.from_numpy(image)[None,]
             if 'A' in i.getbands():
@@ -1489,7 +1605,7 @@ class LoadImage:
             output_images.append(image)
             output_masks.append(mask.unsqueeze(0))
 
-        if len(output_images) > 1 and img.format not in excluded_formats:
+        if len(output_images) > 1:
             output_image = torch.cat(output_images, dim=0)
             output_mask = torch.cat(output_masks, dim=0)
         else:
@@ -1530,8 +1646,8 @@ class LoadImageMask:
     FUNCTION = "load_image"
     def load_image(self, image, channel):
         image_path = folder_paths.get_annotated_filepath(image)
-        i = node_helpers.pillow(Image.open, image_path)
-        i = node_helpers.pillow(ImageOps.exif_transpose, i)
+        i = Image.open(image_path)
+        i = ImageOps.exif_transpose(i)
         if i.getbands() != ("R", "G", "B", "A"):
             if i.mode == 'I':
                 i = i.point(lambda i: i * (1 / 255))
@@ -1745,6 +1861,7 @@ NODE_CLASS_MAPPINGS = {
     "LatentFromBatch": LatentFromBatch,
     "RepeatLatentBatch": RepeatLatentBatch,
     "SaveImage": SaveImage,
+    "SaveImageWithS3Upload": SaveImageWithS3Upload,
     "PreviewImage": PreviewImage,
     "LoadImage": LoadImage,
     "LoadImageMask": LoadImageMask,
@@ -1844,6 +1961,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RepeatLatentBatch": "Repeat Latent Batch",
     # Image
     "SaveImage": "Save Image",
+    "SaveImageWithS3Upload": "Save Image With S3 Upload",
     "PreviewImage": "Preview Image",
     "LoadImage": "Load Image",
     "LoadImageMask": "Load Image (as Mask)",
@@ -1961,7 +2079,6 @@ def init_custom_nodes():
         "nodes_align_your_steps.py",
         "nodes_attention_multiply.py",
         "nodes_advanced_samplers.py",
-        "nodes_webcam.py",
     ]
 
     import_failed = []
