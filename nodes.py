@@ -1405,28 +1405,6 @@ class SaveImage:
 
     CATEGORY = "image"
 
-    def upload_s3(image_name, image):
-        load_dotenv()
-        BUCKET_NAME = os.getenv("S3_BUCKET")
-
-        s3 = boto3.client(
-            's3',
-            aws_access_key_id=os.getenv("CREDENTIALS_ACCESS_KEY"),
-            aws_secret_access_key=os.getenv("CREDENTIALS_SECRET_KEY"),
-        )
-
-        object_name = f"letters/{image_name}"
-
-        try:
-            s3.upload_fileobj(image, BUCKET_NAME, object_name)
-            return True
-        except ClientError as e:
-            logging.error(e)
-            return False
-        except Exception as e:
-            logging.error(e)
-            return False
-
     def save_images(self, images, filename_prefix="ComfyUI", prompt=None, extra_pnginfo=None):
         filename_prefix += self.prefix_append
         full_output_folder, filename, counter, subfolder, filename_prefix = folder_paths.get_save_image_path(filename_prefix, self.output_dir, images[0].shape[1], images[0].shape[0])
@@ -1508,6 +1486,28 @@ class SaveImageWithS3Upload:
 
     CATEGORY = "image"
 
+    def send_slack_message(message):
+        """
+        Send a message to a Slack channel using the incoming webhooks.
+
+        :param webhook_url: The Slack webhook URL.
+        :param message: The message to send.
+        """
+        load_dotenv()
+        webhook_url = os.getenv("SLACK_WEBHOOK_URL")
+
+        slack_data = {'text': message}
+
+        response = requests.post(
+            webhook_url, data=json.dumps(slack_data),
+            headers={'Content-Type': 'application/json'}
+        )
+
+        if response.status_code != 200:
+            raise ValueError(
+                f'Request to Slack returned an error {response.status_code}, the response is:\n{response.text}'
+            )
+
     def upload_s3(image_name, image):
         load_dotenv()
         BUCKET_NAME = os.getenv("S3_BUCKET")
@@ -1559,7 +1559,6 @@ class SaveImageWithS3Upload:
 
         return { "ui": { "images": results } }
 
-
 class SaveImageWithS3Upload:
     def __init__(self):
         self.output_dir = folder_paths.get_output_directory()
@@ -1585,7 +1584,6 @@ class SaveImageWithS3Upload:
     def send_slack_message(self, message):
         """
         Send a message to a Slack channel using the incoming webhooks.
-
         :param message: The message to send.
         """
         webhook_url = os.getenv("SLACK_WEBHOOK_URL")
@@ -1626,7 +1624,7 @@ class SaveImageWithS3Upload:
         except Exception as e:
             print(e)
             return False
-    
+
     def save_images(self, images, filename_prefix="ComfyUI", prompt=None, extra_pnginfo=None):
         try:
             filename_prefix += self.prefix_append
@@ -1659,7 +1657,6 @@ class SaveImageWithS3Upload:
             self.send_slack_message(f"ComfyUI save_images Error: {e}")
 
         return { "ui": { "images": results } }
-
 
 class PreviewImage(SaveImage):
     def __init__(self):
