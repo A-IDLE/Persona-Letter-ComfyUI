@@ -1405,6 +1405,28 @@ class SaveImage:
 
     CATEGORY = "image"
 
+    def upload_s3(image_name, image):
+        load_dotenv()
+        BUCKET_NAME = os.getenv("S3_BUCKET")
+
+        s3 = boto3.client(
+            's3',
+            aws_access_key_id=os.getenv("CREDENTIALS_ACCESS_KEY"),
+            aws_secret_access_key=os.getenv("CREDENTIALS_SECRET_KEY"),
+        )
+
+        object_name = f"letters/{image_name}"
+
+        try:
+            s3.upload_fileobj(image, BUCKET_NAME, object_name)
+            return True
+        except ClientError as e:
+            logging.error(e)
+            return False
+        except Exception as e:
+            logging.error(e)
+            return False
+
     def save_images(self, images, filename_prefix="ComfyUI", prompt=None, extra_pnginfo=None):
         filename_prefix += self.prefix_append
         full_output_folder, filename, counter, subfolder, filename_prefix = folder_paths.get_save_image_path(filename_prefix, self.output_dir, images[0].shape[1], images[0].shape[0])
@@ -1432,6 +1454,111 @@ class SaveImage:
             counter += 1
 
         return { "ui": { "images": results } }
+    
+    def save_images_with_s3_upload(self, images, filename_prefix="ComfyUI", prompt=None, extra_pnginfo=None):
+        filename_prefix += self.prefix_append
+        full_output_folder, filename, counter, subfolder, filename_prefix = folder_paths.get_save_image_path(filename_prefix, self.output_dir, images[0].shape[1], images[0].shape[0])
+        results = list()
+        for (batch_number, image) in enumerate(images):
+            i = 255. * image.cpu().numpy()
+            img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
+            metadata = None
+            if not args.disable_metadata:
+                metadata = PngInfo()
+                if prompt is not None:
+                    metadata.add_text("prompt", json.dumps(prompt))
+                if extra_pnginfo is not None:
+                    for x in extra_pnginfo:
+                        metadata.add_text(x, json.dumps(extra_pnginfo[x]))
+
+            filename_with_batch_num = filename.replace("%batch_num%", str(batch_number))
+            file = f"{filename_with_batch_num}_{counter:05}.jpg"
+            img.save(os.path.join(full_output_folder, file), pnginfo=metadata, compress_level=self.compress_level)
+            self.upload_s3(file, img)
+            results.append({
+                "filename": file,
+                "subfolder": subfolder,
+                "type": self.type
+            })
+            counter += 1
+
+            
+
+        return { "ui": { "images": results } }
+
+class SaveImageWithS3Upload:
+    def __init__(self):
+        self.output_dir = folder_paths.get_output_directory()
+        self.type = "output"
+        self.prefix_append = ""
+        self.compress_level = 4
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": 
+                    {"images": ("IMAGE", ),
+                     "filename_prefix": ("STRING", {"default": "ComfyUI"})},
+                "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"},
+                }
+
+    RETURN_TYPES = ()
+    FUNCTION = "save_images"
+
+    OUTPUT_NODE = True
+
+    CATEGORY = "image"
+
+    def upload_s3(image_name, image):
+        load_dotenv()
+        BUCKET_NAME = os.getenv("S3_BUCKET")
+
+        s3 = boto3.client(
+            's3',
+            aws_access_key_id=os.getenv("CREDENTIALS_ACCESS_KEY"),
+            aws_secret_access_key=os.getenv("CREDENTIALS_SECRET_KEY"),
+        )
+
+        object_name = f"letters/{image_name}"
+
+        try:
+            s3.upload_fileobj(image, BUCKET_NAME, object_name)
+            return True
+        except ClientError as e:
+            print(e)
+            return False
+        except Exception as e:
+            print(e)
+            return False
+    
+    def save_images_with_s3_upload(self, images, filename_prefix="ComfyUI", prompt=None, extra_pnginfo=None):
+        filename_prefix += self.prefix_append
+        full_output_folder, filename, counter, subfolder, filename_prefix = folder_paths.get_save_image_path(filename_prefix, self.output_dir, images[0].shape[1], images[0].shape[0])
+        results = list()
+        for (batch_number, image) in enumerate(images):
+            i = 255. * image.cpu().numpy()
+            img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
+            metadata = None
+            if not args.disable_metadata:
+                metadata = PngInfo()
+                if prompt is not None:
+                    metadata.add_text("prompt", json.dumps(prompt))
+                if extra_pnginfo is not None:
+                    for x in extra_pnginfo:
+                        metadata.add_text(x, json.dumps(extra_pnginfo[x]))
+
+            filename_with_batch_num = filename.replace("%batch_num%", str(batch_number))
+            file = f"{filename_with_batch_num}_{counter:05}.jpg"
+            img.save(os.path.join(full_output_folder, file), pnginfo=metadata, compress_level=self.compress_level)
+            self.upload_s3(file, img)
+            results.append({
+                "filename": file,
+                "subfolder": subfolder,
+                "type": self.type
+            })
+            counter += 1
+
+        return { "ui": { "images": results } }
+
 
 class SaveImageWithS3Upload:
     def __init__(self):
