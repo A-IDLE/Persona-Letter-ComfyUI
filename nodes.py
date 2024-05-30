@@ -1,3 +1,5 @@
+import io
+import requests
 import torch
 
 import os
@@ -35,6 +37,10 @@ import importlib
 import folder_paths
 import latent_preview
 import node_helpers
+
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
+from dotenv import load_dotenv
 
 def before_node_execution():
     comfy.model_management.throw_exception_if_processing_interrupted()
@@ -1427,6 +1433,107 @@ class SaveImage:
 
         return { "ui": { "images": results } }
 
+class SaveImageWithS3Upload:
+    def __init__(self):
+        self.output_dir = folder_paths.get_output_directory()
+        self.type = "output"
+        self.prefix_append = ""
+        self.compress_level = 4
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": 
+                    {"images": ("IMAGE", ),
+                     "filename_prefix": ("STRING", {"default": "ComfyUI"})},
+                "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"},
+                }
+
+    RETURN_TYPES = ()
+    FUNCTION = "save_images"
+
+    OUTPUT_NODE = True
+
+    CATEGORY = "image"
+
+    def send_slack_message(self, message):
+        """
+        Send a message to a Slack channel using the incoming webhooks.
+
+        :param message: The message to send.
+        """
+        webhook_url = os.getenv("SLACK_WEBHOOK_URL")
+
+        slack_data = {'text': message}
+
+        response = requests.post(
+            webhook_url, data=json.dumps(slack_data),
+            headers={'Content-Type': 'application/json'}
+        )
+
+        if response.status_code != 200:
+            raise ValueError(
+                f'Request to Slack returned an error {response.status_code}, the response is:\n{response.text}'
+            )
+
+    def upload_s3(self, image_name, image):
+        load_dotenv()
+        BUCKET_NAME = os.getenv("S3_BUCKET")
+
+        s3 = boto3.client(
+            's3',
+            aws_access_key_id=os.getenv("CREDENTIALS_ACCESS_KEY"),
+            aws_secret_access_key=os.getenv("CREDENTIALS_SECRET_KEY"),
+        )
+
+        object_name = f"letters/{image_name}"
+
+        try:
+            buffer = io.BytesIO()
+            image.save(buffer, format='JPEG')
+            buffer.seek(0)
+            s3.upload_fileobj(buffer, BUCKET_NAME, object_name)
+            return True
+        except ClientError as e:
+            print(e)
+            return False
+        except Exception as e:
+            print(e)
+            return False
+    
+    def save_images(self, images, filename_prefix="ComfyUI", prompt=None, extra_pnginfo=None):
+        try:
+            filename_prefix += self.prefix_append
+            full_output_folder, filename, counter, subfolder, filename_prefix = folder_paths.get_save_image_path(filename_prefix, self.output_dir, images[0].shape[1], images[0].shape[0])
+            results = list()
+            for (batch_number, image) in enumerate(images):
+                i = 255. * image.cpu().numpy()
+                img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
+                metadata = None
+                if not args.disable_metadata:
+                    metadata = PngInfo()
+                    if prompt is not None:
+                        metadata.add_text("prompt", json.dumps(prompt))
+                    if extra_pnginfo is not None:
+                        for x in extra_pnginfo:
+                            metadata.add_text(x, json.dumps(extra_pnginfo[x]))
+
+                filename_with_batch_num = filename.replace("%batch_num%", str(batch_number))
+                file = f"{filename_prefix}_{batch_number}.jpg"
+                img.save(os.path.join(full_output_folder, file), pnginfo=metadata, compress_level=self.compress_level)
+                self.upload_s3(file, img)
+                results.append({
+                    "filename": file,
+                    "subfolder": subfolder,
+                    "type": self.type
+                })
+                counter += 1
+            self.send_slack_message(f"ComfyUI Image uploaded to S3 successfully letter_id: {filename_prefix}")
+        except Exception as e:
+            self.send_slack_message(f"ComfyUI save_images Error: {e}")
+
+        return { "ui": { "images": results } }
+
+
 class PreviewImage(SaveImage):
     def __init__(self):
         self.output_dir = folder_paths.get_temp_directory()
@@ -1730,6 +1837,7 @@ NODE_CLASS_MAPPINGS = {
     "LatentFromBatch": LatentFromBatch,
     "RepeatLatentBatch": RepeatLatentBatch,
     "SaveImage": SaveImage,
+    "SaveImageWithS3Upload": SaveImageWithS3Upload,
     "PreviewImage": PreviewImage,
     "LoadImage": LoadImage,
     "LoadImageMask": LoadImageMask,
@@ -1829,6 +1937,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RepeatLatentBatch": "Repeat Latent Batch",
     # Image
     "SaveImage": "Save Image",
+    "SaveImageWithS3Upload": "Save Image With S3 Upload",
     "PreviewImage": "Preview Image",
     "LoadImage": "Load Image",
     "LoadImageMask": "Load Image (as Mask)",
